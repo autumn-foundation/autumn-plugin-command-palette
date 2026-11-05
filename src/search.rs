@@ -128,15 +128,24 @@ pub fn score(command: &Command, query: &str) -> u8 {
         text.push(' ');
         text.push_str(&fold(extra));
     }
-    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
-    if query
-        .split_whitespace()
-        .all(|q| words.iter().any(|word| word.starts_with(q)))
-    {
-        WORST
+    // The query and the text split into words by the same rule. A query
+    // with no letter or digit (`?`) matches as a substring.
+    let split = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let words = split(&text);
+    let wanted = split(query);
+    let found = if wanted.is_empty() {
+        text.contains(query)
     } else {
-        NO_MATCH
-    }
+        wanted
+            .iter()
+            .all(|q| words.iter().any(|word| word.starts_with(q.as_str())))
+    };
+    if found { WORST } else { NO_MATCH }
 }
 
 /// Lowercase `text` and remove the combining marks U+0300…U+036F. Thus
@@ -330,6 +339,16 @@ mod tests {
             NO_MATCH,
             "no `e` and no word starts with `e`"
         );
+    }
+
+    #[test]
+    fn punctuation_in_a_query_splits_it_into_words() {
+        let mail = Command::route("m", "Send message", "/m").keywords(["e-mail", "c++"]);
+        assert_eq!(score(&mail, "e-mail"), WORST);
+        assert_eq!(score(&mail, "e mail"), WORST);
+        assert_eq!(score(&mail, "c++"), WORST);
+        assert_eq!(score(&mail, "+"), WORST, "no letter: a substring match");
+        assert_eq!(score(&mail, "?"), NO_MATCH);
     }
 
     #[test]

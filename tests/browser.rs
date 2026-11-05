@@ -645,3 +645,58 @@ async fn without_htmx_the_link_stays() {
         "the hotkey does nothing"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn a_late_response_for_an_old_query_does_not_count() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    assert!(chord(&page, "k", true, false).await);
+    wait_for_options(&page).await;
+    // Type a new query, then let a response for the old (empty) query land
+    // before the new request goes out.
+    assert!(
+        eval_bool(
+            &page,
+            "(async () => { const i = document.getElementById('command-palette-input'); \
+             i.value = 'articles'; i.dispatchEvent(new Event('input', { bubbles: true })); \
+             await htmx.ajax('GET', '/_palette?q=', { target: '#command-palette-list', swap: 'innerHTML' }); \
+             return document.getElementById('command-palette-list').getAttribute('aria-busy') === 'true'; })()",
+        )
+        .await,
+        "the list for the old query stays busy"
+    );
+    must(
+        &page,
+        &format!("{ACTIVE_ID} === ''"),
+        "no old option is active",
+    )
+    .await;
+    page.press("Enter").await.expect("enter");
+    page.expect_text("Posts page")
+        .await
+        .expect("Enter runs the first option for the new query");
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn the_hotkey_follows_the_layout() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    let send = |key: &str, code: &str| {
+        format!(
+            "(() => !document.body.dispatchEvent(new KeyboardEvent('keydown', \
+             {{ key: '{key}', code: '{code}', ctrlKey: true, bubbles: true, cancelable: true }})))()"
+        )
+    };
+    assert!(
+        !eval_bool(&page, &send("x", "KeyK")).await,
+        "Dvorak: KeyK types `x`, so Ctrl+X stays Cut"
+    );
+    must(&page, &format!("!{DIALOG}.open"), "the dialog stays closed").await;
+    assert!(
+        eval_bool(&page, &send("л", "KeyK")).await,
+        "Cyrillic: Ctrl+K gives `л`, and the code matches"
+    );
+    must(&page, &format!("{DIALOG}.open"), "the dialog opens").await;
+}

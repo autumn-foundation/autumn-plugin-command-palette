@@ -27,10 +27,13 @@
     return hotkey;
   }
 
-  // The key matches by `e.key`, or for a letter or a digit by `e.code`.
-  // `e.code` works when the layout or Alt changes `e.key` (Option+P is π).
+  // The key matches by `e.key`. When `e.key` is not a Latin letter or a
+  // digit (a Cyrillic layout, Option+P is π), a letter or a digit matches by
+  // `e.code`. A Latin `e.key` never uses `e.code`: on Dvorak, KeyB is `x`.
   function sameKey(e, key) {
-    if ((e.key || '').toLowerCase() === key) return true;
+    var pressed = (e.key || '').toLowerCase();
+    if (pressed === key) return true;
+    if (/^[a-z0-9]$/.test(pressed)) return false;
     if (/^[a-z]$/.test(key)) return e.code === 'Key' + key.toUpperCase();
     if (/^[0-9]$/.test(key)) return e.code === 'Digit' + key;
     return false;
@@ -114,11 +117,22 @@
     p.input.removeAttribute('aria-activedescendant');
   }
 
+  // The query as the server cuts it: trimmed, 200 characters at most.
+  function normalize(value) {
+    return Array.from(value.trim()).slice(0, 200).join('').trim();
+  }
+
   // After a swap, set aria-expanded to show if the list has options. Set
-  // aria-activedescendant to the selected option.
+  // aria-activedescendant to the selected option. A list for an old query
+  // stays busy: the response for the new query comes later.
   function sync(panel) {
     var p = parts(panel);
     if (!p.input || !p.list) return;
+    var stamp = p.list.querySelector('template[data-command-palette-query]');
+    if (stamp && stamp.getAttribute('data-command-palette-query') !== normalize(p.input.value)) {
+      stale(p);
+      return;
+    }
     p.list.removeAttribute('aria-busy');
     var options = p.list.querySelectorAll(OPTION);
     p.input.setAttribute('aria-expanded', options.length ? 'true' : 'false');
@@ -202,8 +216,9 @@
     p.list.removeAttribute('aria-busy');
     if (p.status) p.status.textContent = panel.getAttribute('data-command-palette-error') || '';
   }
-  document.addEventListener('htmx:responseError', failed);
-  document.addEventListener('htmx:sendError', failed);
+  ['htmx:responseError', 'htmx:sendError', 'htmx:timeout', 'htmx:swapError'].forEach(function (name) {
+    document.addEventListener(name, failed);
+  });
 
   document.addEventListener('click', function (e) {
     var t = e.target;

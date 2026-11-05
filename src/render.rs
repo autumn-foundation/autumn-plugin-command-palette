@@ -180,11 +180,23 @@ fn option_body(command: &Command, option_id: &str) -> Markup {
     }
 }
 
-/// `true` for a path on this origin: it starts with one `/`. Only such a
-/// path gets the CSRF token. A `//host` or `/\host` path goes to another
-/// host in a browser.
-fn same_origin(path: &str) -> bool {
-    path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\")
+/// `true` for a path on this origin. Only such a path gets the CSRF token.
+///
+/// - A browser removes tab and newline from a URL, so a path with them is
+///   not on this origin (`/\t/host` becomes `//host`).
+/// - A `//host` or `/\host` path goes to another host.
+/// - A path with a scheme (`https:`, `javascript:`) is not on this origin.
+/// - A relative path (`logout`, `./x`) is on this origin.
+pub fn same_origin(path: &str) -> bool {
+    if path.contains(['\t', '\n', '\r']) {
+        return false;
+    }
+    let path = path.trim_start();
+    if path.starts_with("//") || path.starts_with("/\\") || path.starts_with('\\') {
+        return false;
+    }
+    let head = path.split(['/', '?', '#']).next().unwrap_or("");
+    !head.contains(':')
 }
 
 /// The groups and options of the listbox. The first option is active.
@@ -264,6 +276,9 @@ fn options(palette: &Inner, results: &SearchResults<'_>, csrf: Option<&Csrf>) ->
 
 pub fn fragment(palette: &Inner, results: &SearchResults<'_>, csrf: Option<&Csrf>) -> Markup {
     html! {
+        // The query of this list. The pack JS compares it with the input,
+        // so a late response for an old query does not count as new.
+        template data-command-palette-query=(results.query) {}
         (options(palette, results, csrf))
         p id=(format!("{}-status", palette.id)) hx-swap-oob="innerHTML" {
             (status_text(palette, results))
@@ -354,4 +369,28 @@ pub fn page(palette: &Inner, results: &SearchResults<'_>, csrf: Option<&Csrf>) -
 
 pub fn preview(palette: &Inner, results: &SearchResults<'_>) -> Markup {
     panel(palette, Some(results))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_origin;
+
+    #[test]
+    fn same_origin_paths() {
+        for path in ["/x", "/posts/new?a=b", "logout", "./x", "a/b:c", "/x#y:z"] {
+            assert!(same_origin(path), "{path}");
+        }
+        for path in [
+            "//evil.example/x",
+            "/\\evil.example",
+            "\\\\evil.example",
+            "https://evil.example",
+            "javascript:alert(1)",
+            "/\t/evil.example",
+            "/\n/evil.example",
+            " //evil.example",
+        ] {
+            assert!(!same_origin(path), "{path:?}");
+        }
+    }
 }
