@@ -303,14 +303,14 @@ mod tests {
     fn take_ranked_orders_by_rank_then_index() {
         assert_eq!(take_ranked(&[2, NO_MATCH, 0, 1, 0], 10), [2, 4, 3, 0]);
         assert_eq!(take_ranked(&[2, NO_MATCH, 0, 1, 0], 2), [2, 4]);
-        assert!(take_ranked(&[0, 1], 0).is_empty());
-        assert!(take_ranked(&[], 5).is_empty());
+        assert_eq!(take_ranked(&[0, 1], 0), Vec::<usize>::new());
+        assert_eq!(take_ranked(&[], 5), Vec::<usize>::new());
     }
 
     #[test]
     fn parse_recent_dedupes_and_caps() {
         assert_eq!(parse_recent(" a, b,,a , c"), ["a", "b", "c"]);
-        assert!(parse_recent("").is_empty());
+        assert_eq!(parse_recent(""), Vec::<&str>::new());
         let many: Vec<String> = (0..50).map(|i| format!("id{i}")).collect();
         assert_eq!(parse_recent(&many.join(",")).len(), MAX_RECENT_IDS);
     }
@@ -341,7 +341,7 @@ mod tests {
     fn a_query_ranks_and_has_no_recent_group() {
         assert_eq!(find("post", &["out"]), ["posts", "posts.new"]);
         assert_eq!(find("new", &[]), ["posts.new"]);
-        assert!(find("zebra", &[]).is_empty());
+        assert_eq!(find("zebra", &[]), Vec::<String>::new());
     }
 
     #[test]
