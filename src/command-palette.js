@@ -4,14 +4,17 @@
 // arrow keys and clicks it on Enter. This file only:
 // - opens and closes the dialog (hotkey, invoker button);
 // - asks htmx for the results when the dialog opens;
-// - keeps aria-expanded and aria-activedescendant right after a swap;
+// - keeps aria-expanded, aria-activedescendant and aria-busy correct;
 // - keeps the recent ids in localStorage.
 (function () {
   'use strict';
 
   var PANEL = '.autumn-command-palette-panel';
+  var OPTION = '[role="option"]';
   var STORE = 'autumn-command-palette:recent:';
   var ready = new WeakSet();
+  // Enter while the list is out of date: run the first option of the next list.
+  var pending = new WeakSet();
   var apple = /Mac|iPhone|iPad|iPod/.test(
     (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || ''
   );
@@ -24,17 +27,32 @@
     return hotkey;
   }
 
+  // The key matches by `e.key`, or for a letter or a digit by `e.code`.
+  // `e.code` works when the layout or Alt changes `e.key` (Option+P is π).
+  function sameKey(e, key) {
+    if ((e.key || '').toLowerCase() === key) return true;
+    if (/^[a-z]$/.test(key)) return e.code === 'Key' + key.toUpperCase();
+    if (/^[0-9]$/.test(key)) return e.code === 'Digit' + key;
+    return false;
+  }
+
   function matches(e, hotkey) {
-    if ((e.key || '').toLowerCase() !== hotkey.key) return false;
-    var ctrl = hotkey.ctrl, meta = hotkey.meta;
+    if (!sameKey(e, hotkey.key)) return false;
+    var ctrl = hotkey.ctrl;
+    var meta = hotkey.meta;
     if (hotkey.mod) {
-      // `mod` is Ctrl or Meta, on each platform.
-      if (!e.ctrlKey && !e.metaKey) return false;
-      if (e.ctrlKey && !ctrl && e.metaKey && !meta) return false;
-      ctrl = ctrl || e.ctrlKey;
-      meta = meta || e.metaKey;
+      // `mod` is ⌘ on Apple platforms: Ctrl+K edits text there. On the
+      // other platforms `mod` is Ctrl or ⌘, not both.
+      if (apple) {
+        meta = true;
+      } else {
+        if (e.ctrlKey === e.metaKey) return false;
+        ctrl = e.ctrlKey;
+        meta = e.metaKey;
+      }
     }
-    // A letter tells Shift apart. A symbol (`?`) already has its Shift.
+    // For a letter, a digit or an F key, Shift must match. For a symbol,
+    // `e.key` already includes Shift.
     var shiftMatters = /^[a-z0-9]$|^f\d+$/.test(hotkey.key);
     return e.ctrlKey === ctrl && e.metaKey === meta && e.altKey === hotkey.alt &&
       (!shiftMatters || e.shiftKey === hotkey.shift);
@@ -71,54 +89,94 @@
       input: document.getElementById(id + '-input'),
       recent: document.getElementById(id + '-recent'),
       list: document.getElementById(id + '-list'),
+      status: document.getElementById(id + '-status'),
       max: Number(panel.getAttribute('data-command-palette-recent-max')) || 0
     };
   }
 
-  // After a swap: aria-expanded tells if there are options; the active
-  // option is the first selected one.
+  function panelFor(id) {
+    return document.querySelector(PANEL + '[data-command-palette="' + CSS.escape(id) + '"]');
+  }
+
+  // Make `option` the active option. The keyboard core reads the same
+  // attributes.
+  function activate(p, option) {
+    p.list.querySelectorAll(OPTION).forEach(function (o) {
+      o.setAttribute('aria-selected', o === option ? 'true' : 'false');
+    });
+    if (option) p.input.setAttribute('aria-activedescendant', option.id);
+    else p.input.removeAttribute('aria-activedescendant');
+  }
+
+  // The list is out of date: Enter must not run an old option.
+  function stale(p) {
+    p.list.setAttribute('aria-busy', 'true');
+    p.input.removeAttribute('aria-activedescendant');
+  }
+
+  // After a swap, set aria-expanded to show if the list has options. Set
+  // aria-activedescendant to the selected option.
   function sync(panel) {
     var p = parts(panel);
     if (!p.input || !p.list) return;
-    var options = p.list.querySelectorAll('[role="option"]');
+    p.list.removeAttribute('aria-busy');
+    var options = p.list.querySelectorAll(OPTION);
     p.input.setAttribute('aria-expanded', options.length ? 'true' : 'false');
-    var active = p.list.querySelector('[role="option"][aria-selected="true"]');
-    if (active) p.input.setAttribute('aria-activedescendant', active.id);
-    else p.input.removeAttribute('aria-activedescendant');
+    var active = p.list.querySelector(OPTION + '[aria-selected="true"]');
+    activate(p, active);
+    if (pending.has(panel)) {
+      pending.delete(panel);
+      if (active) active.click();
+    }
   }
 
   function open(panel) {
     var p = parts(panel);
     if (!p.dialog || p.dialog.open) return;
+    // Show no old results while the new ones load.
     p.input.value = '';
+    p.list.replaceChildren();
+    if (p.status) p.status.replaceChildren();
+    p.input.setAttribute('aria-expanded', 'false');
+    stale(p);
+    pending.delete(panel);
     p.recent.value = readRecent(p.id).join(',');
     p.dialog.showModal();
     p.input.focus();
-    if (window.htmx) window.htmx.trigger(p.input, 'command-palette-open');
+    window.htmx.trigger(p.input, 'command-palette-open');
   }
 
   function toggle(panel) {
     var p = parts(panel);
-    if (!p.dialog) return;
     if (p.dialog.open) p.dialog.close();
     else open(panel);
+  }
+
+  // With JS and htmx on, the button opens the dialog. The link is the
+  // no-JS path.
+  function upgrade(root) {
+    if (!window.htmx) return;
+    function each(selector, fn) {
+      if (root.matches && root.matches(selector)) fn(root);
+      root.querySelectorAll(selector).forEach(fn);
+    }
+    each('[data-command-palette-open]', function (b) {
+      if (panelFor(b.getAttribute('data-command-palette-open'))) b.hidden = false;
+    });
+    each('[data-command-palette-link]', function (a) {
+      if (panelFor(a.getAttribute('data-command-palette-link'))) a.hidden = true;
+    });
+    if (apple) {
+      each('[data-command-palette-mod]', function (k) { k.textContent = '⌘'; });
+    }
   }
 
   function init(panel) {
     if (ready.has(panel)) return;
     ready.add(panel);
-    var id = panel.getAttribute('data-command-palette');
-    // With JS on, the button opens the dialog. The link is the no-JS path.
-    document.querySelectorAll('[data-command-palette-open="' + id + '"]').forEach(function (b) {
-      b.hidden = false;
-    });
-    document.querySelectorAll('[data-command-palette-link="' + id + '"]').forEach(function (a) {
-      a.hidden = true;
-    });
-    if (apple) {
-      document.querySelectorAll('[data-command-palette-mod]').forEach(function (k) {
-        k.textContent = '⌘';
-      });
+    var p = parts(panel);
+    if (p.input) {
+      p.input.addEventListener('input', function () { stale(p); });
     }
     panel.setAttribute('data-command-palette-ready', '');
   }
@@ -128,19 +186,31 @@
     if (!root.querySelectorAll) return;
     if (root.matches && root.matches(PANEL)) init(root);
     root.querySelectorAll(PANEL).forEach(init);
+    // The invoker and its panel can come in different swaps.
+    upgrade(document.documentElement);
     // An htmx swap into the listbox: the target is the listbox.
     var panel = root.closest && root.closest(PANEL);
     if (panel) sync(panel);
   });
+
+  // A failed request: tell the user, and leave the list as it is.
+  function failed(e) {
+    var panel = e.target.closest && e.target.closest(PANEL);
+    if (!panel) return;
+    var p = parts(panel);
+    pending.delete(panel);
+    p.list.removeAttribute('aria-busy');
+    if (p.status) p.status.textContent = panel.getAttribute('data-command-palette-error') || '';
+  }
+  document.addEventListener('htmx:responseError', failed);
+  document.addEventListener('htmx:sendError', failed);
 
   document.addEventListener('click', function (e) {
     var t = e.target;
     if (!t.closest) return;
     var opener = t.closest('[data-command-palette-open]');
     if (opener) {
-      var panel = document.querySelector(
-        PANEL + '[data-command-palette="' + opener.getAttribute('data-command-palette-open') + '"]'
-      );
+      var panel = panelFor(opener.getAttribute('data-command-palette-open'));
       if (panel) open(panel);
       return;
     }
@@ -151,16 +221,45 @@
     }
   });
 
+  // A pointer in the list moves the active option, so the mouse and Enter
+  // agree.
+  document.addEventListener('pointermove', function (e) {
+    var option = e.target.closest && e.target.closest(PANEL + ' ' + OPTION);
+    if (!option || option.getAttribute('aria-selected') === 'true') return;
+    var p = parts(option.closest(PANEL));
+    if (!p.list.hasAttribute('aria-busy')) activate(p, option);
+  });
+
+  // A click in the panel keeps focus on the combobox.
+  document.addEventListener('mousedown', function (e) {
+    var panel = e.target.closest && e.target.closest(PANEL);
+    if (panel && !e.target.closest('input')) e.preventDefault();
+  });
+
   document.addEventListener('keydown', function (e) {
     if (e.defaultPrevented || e.isComposing) return;
+    var t = e.target;
+    // Enter before the new list comes: run its first option when it comes.
+    if (e.key === 'Enter' && t.closest) {
+      var own = t.closest(PANEL);
+      if (own) {
+        var p = parts(own);
+        if (t === p.input && p.list.hasAttribute('aria-busy')) {
+          e.preventDefault();
+          pending.add(own);
+        }
+        return;
+      }
+    }
+    if (e.repeat || !window.htmx) return;
     document.querySelectorAll(PANEL).forEach(function (panel) {
-      var p = parts(panel);
-      if (!p.dialog || e.defaultPrevented) return;
+      var dialog = panel.closest('dialog');
+      if (!dialog || e.defaultPrevented) return;
       var hotkey = parse(panel.getAttribute('data-command-palette-hotkey'));
       if (!matches(e, hotkey)) return;
       var plain = !hotkey.mod && !hotkey.ctrl && !hotkey.meta && !hotkey.alt;
       // A plain key types in a text field. In the open palette it types too.
-      if (plain && (editable(e.target) || p.dialog.open)) return;
+      if (plain && (editable(t) || dialog.open)) return;
       e.preventDefault();
       toggle(panel);
     });

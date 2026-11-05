@@ -21,8 +21,9 @@ use crate::palette::{Csrf, Inner, PALETTE_PATH, pack};
 use crate::search::SearchResults;
 
 /// The htmx triggers of the combobox. `command-palette-open` comes from the
-/// pack JS when the dialog opens.
-const TRIGGERS: &str = "input changed delay:150ms, search, command-palette-open";
+/// pack JS when the dialog opens. A plain `input` trigger (no `changed`)
+/// sends the same query again after the dialog opens again.
+const TRIGGERS: &str = "input delay:150ms, command-palette-open";
 
 /// The mark in `Labels::count` that the number replaces.
 const COUNT_MARK: &str = concat!("{", "count", "}");
@@ -81,9 +82,12 @@ fn panel(palette: &Inner, results: Option<&SearchResults<'_>>) -> Markup {
     html! {
         div class=(class) data-command-palette=(id)
             data-command-palette-hotkey=(palette.hotkey.spec())
-            data-command-palette-recent-max=(palette.limits.recent) {
+            data-command-palette-recent-max=(palette.limits.recent)
+            data-command-palette-error=(palette.labels.error) {
             label class="autumn-visually-hidden" for=(input_id) { (palette.labels.input) }
-            input id=(input_id) class="autumn-command-palette-input" type="search" name="q"
+            // `type="text"`: in a search input, the first Escape clears
+            // the text. Here Escape closes the dialog.
+            input id=(input_id) class="autumn-command-palette-input" type="text" name="q"
                 value=[results.map(|r| r.query.as_str())]
                 role="combobox" aria-expanded=(if expanded { "true" } else { "false" })
                 aria-autocomplete="list" aria-controls=(list_id)
@@ -125,6 +129,7 @@ pub fn dialog(palette: &Inner) -> Markup {
     let config = ModalConfig::new()
         .light_dismiss(true)
         .class("autumn-command-palette-dialog")
+        .close_button(palette.labels.close.clone())
         .footer(footer(palette));
     modal(
         &palette.id,
@@ -142,33 +147,60 @@ fn status_text(palette: &Inner, results: &SearchResults<'_>) -> Markup {
             span class="autumn-command-palette-empty" { (palette.labels.empty) }
         } @else {
             span class="autumn-visually-hidden" {
-                (palette.labels.count.replace(COUNT_MARK, &count.to_string()))
+                @if count == 1 {
+                    (palette.labels.count_one)
+                } @else {
+                    (palette.labels.count.replace(COUNT_MARK, &count.to_string()))
+                }
             }
         }
     }
 }
 
-/// The content of one option.
-fn option_body(command: &Command) -> Markup {
+/// `true` when `command` has a hint or a shortcut.
+fn has_detail(command: &Command) -> bool {
+    command.hint_text().is_some() || !command.shortcut_keys().is_empty()
+}
+
+/// The content of one option. The name is the title. The hint and the keys
+/// are the description (`{option_id}-desc`).
+fn option_body(command: &Command, option_id: &str) -> Markup {
+    let keys: Vec<&str> = command.shortcut_keys().iter().map(String::as_str).collect();
     html! {
         span class="autumn-command-palette-title" { (command.title()) }
-        @if let Some(hint) = command.hint_text() {
-            span class="autumn-command-palette-hint" { (hint) }
-        }
-        @if !command.shortcut_keys().is_empty() {
-            @let keys: Vec<&str> = command.shortcut_keys().iter().map(String::as_str).collect();
-            (kbd_combo(&keys))
+        @if has_detail(command) {
+            span id=(format!("{option_id}-desc")) class="autumn-command-palette-detail"
+                aria-hidden="true" {
+                @if let Some(hint) = command.hint_text() {
+                    span class="autumn-command-palette-hint" { (hint) }
+                }
+                (kbd_combo(&keys))
+            }
         }
     }
+}
+
+/// `true` for a path on this origin: it starts with one `/`. Only such a
+/// path gets the CSRF token. A `//host` or `/\host` path goes to another
+/// host in a browser.
+fn same_origin(path: &str) -> bool {
+    path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\")
 }
 
 /// The groups and options of the listbox. The first option is active.
 fn options(palette: &Inner, results: &SearchResults<'_>, csrf: Option<&Csrf>) -> Markup {
     let id = &palette.id;
     let form_id = format!("{id}-action");
-    let has_action = results
+    let external_id = format!("{id}-action-external");
+    let action_paths: Vec<&str> = results
         .commands()
-        .any(|command| matches!(command.target(), CommandTarget::Action(_)));
+        .filter_map(|command| match command.target() {
+            CommandTarget::Action(path) => Some(path.as_str()),
+            CommandTarget::Route(_) => None,
+        })
+        .collect();
+    let has_local = action_paths.iter().any(|path| same_origin(path));
+    let has_external = action_paths.iter().any(|path| !same_origin(path));
     // Number the options across the groups.
     let mut next = 0usize;
     let numbered: Vec<Vec<(usize, &Command)>> = results
@@ -193,32 +225,39 @@ fn options(palette: &Inner, results: &SearchResults<'_>, csrf: Option<&Csrf>) ->
                 @for &(n, command) in items {
                     @let option_id = format!("{id}-option-{n}");
                     @let selected = if n == 0 { "true" } else { "false" };
+                    @let described = has_detail(command).then(|| format!("{option_id}-desc"));
                     @match command.target() {
                         CommandTarget::Route(href) => {
                             a id=(option_id) class="autumn-command-palette-option" role="option"
                                 tabindex="-1" aria-selected=(selected)
-                                data-command-id=(command.id()) href=(href) {
-                                (option_body(command))
+                                data-command-id=(command.id()) href=(href)
+                                aria-describedby=[described.as_deref()] {
+                                (option_body(command, &option_id))
                             }
                         }
                         CommandTarget::Action(path) => {
                             button id=(option_id) class="autumn-command-palette-option" role="option"
                                 tabindex="-1" aria-selected=(selected)
-                                data-command-id=(command.id()) type="submit" form=(form_id)
-                                formaction=(path) formmethod="post" {
-                                (option_body(command))
+                                data-command-id=(command.id()) type="submit"
+                                form=(if same_origin(path) { &form_id } else { &external_id })
+                                formaction=(path) formmethod="post"
+                                aria-describedby=[described.as_deref()] {
+                                (option_body(command, &option_id))
                             }
                         }
                     }
                 }
             }
         }
-        @if has_action {
+        @if has_local {
             form id=(form_id) method="post" hidden {
                 @if let Some(csrf) = csrf {
                     input type="hidden" name=(csrf.field) value=(csrf.token);
                 }
             }
+        }
+        @if has_external {
+            form id=(external_id) method="post" hidden {}
         }
     }
 }
@@ -276,7 +315,7 @@ fn page_item(command: &Command, csrf: Option<&Csrf>) -> Markup {
             }
             CommandTarget::Action(path) => {
                 form class="autumn-command-palette-page-action" method="post" action=(path) {
-                    @if let Some(csrf) = csrf {
+                    @if let Some(csrf) = csrf.filter(|_| same_origin(path)) {
                         input type="hidden" name=(csrf.field) value=(csrf.token);
                     }
                     button class="autumn-command-palette-page-button" type="submit" { (command.title()) }

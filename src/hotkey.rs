@@ -18,6 +18,14 @@ pub enum HotkeyError {
     /// A modifier is in the spec two times.
     #[error("the modifier `{0}` is in the hotkey two times")]
     RepeatedModifier(String),
+    /// The spec has `mod` and also `ctrl` or `meta`.
+    #[error("`mod` and `{0}` cannot be in one hotkey: `mod` is Ctrl or ⌘")]
+    ConflictingModifier(String),
+    /// The spec has `shift` and a key that is not a letter, a digit or
+    /// `F1`…`F12`. Shift changes such a key: Shift+/ gives `?`. Use the
+    /// changed key.
+    #[error("`shift` needs a letter, a digit or F1 to F12, not `{0}`")]
+    ShiftedSymbol(String),
     /// The key is not one visible ASCII character or `F1`…`F12`.
     #[error("`{0}` is not a key: use one visible ASCII character or F1 to F12")]
     BadKey(String),
@@ -25,8 +33,8 @@ pub enum HotkeyError {
 
 /// A key and its modifiers, from a spec such as `mod+k`.
 ///
-/// `mod` is Ctrl or ⌘ (Meta). Both work on all platforms. The other
-/// modifiers are `ctrl`, `meta`, `alt` and `shift`. The key is one visible
+/// `mod` is ⌘ (Meta) on Apple platforms, and Ctrl or ⌘ on the others. The
+/// other modifiers are `ctrl`, `meta`, `alt` and `shift`. The key is one visible
 /// ASCII character or `F1`…`F12`. Case does not matter.
 ///
 /// ```
@@ -55,7 +63,8 @@ impl Hotkey {
     /// # Errors
     ///
     /// [`HotkeyError`] when the spec is empty, has no key, has an unknown
-    /// or a repeated modifier, or has a bad key.
+    /// or a repeated modifier, has `mod` with `ctrl` or `meta`, has
+    /// `shift` with a symbol, or has a bad key.
     pub fn parse(spec: &str) -> Result<Self, HotkeyError> {
         let trimmed = spec.trim();
         if trimmed.is_empty() {
@@ -97,6 +106,13 @@ impl Hotkey {
         }
         if !valid_key(key) {
             return Err(HotkeyError::BadKey(key.clone()));
+        }
+        if hotkey.primary && (hotkey.ctrl || hotkey.meta) {
+            let other = if hotkey.ctrl { "ctrl" } else { "meta" };
+            return Err(HotkeyError::ConflictingModifier(other.to_owned()));
+        }
+        if hotkey.shift && !(key.len() > 1 || key.bytes().all(|b| b.is_ascii_alphanumeric())) {
+            return Err(HotkeyError::ShiftedSymbol(key.clone()));
         }
         hotkey.key.clone_from(key);
         Ok(hotkey)
@@ -189,11 +205,12 @@ impl Hotkey {
         self.primary
     }
 
-    /// `true` when the hotkey has a modifier. A hotkey with no modifier does
+    /// `true` when the hotkey has `mod`, `ctrl`, `meta` or `alt`. Shift
+    /// does not count: Shift+K types `K`. A hotkey without one of these does
     /// nothing while focus is in a text field.
     #[must_use]
     pub const fn has_modifier(&self) -> bool {
-        self.primary || self.ctrl || self.meta || self.alt || self.shift
+        self.primary || self.ctrl || self.meta || self.alt
     }
 }
 
@@ -291,7 +308,8 @@ mod tests {
         assert!(!slash.uses_primary());
         assert!(Hotkey::default().has_modifier());
         assert!(Hotkey::default().uses_primary());
-        assert!(Hotkey::parse("shift+?").expect("valid").has_modifier());
+        assert!(!Hotkey::parse("shift+k").expect("valid").has_modifier());
+        assert!(Hotkey::parse("alt+k").expect("valid").has_modifier());
     }
 
     #[test]
@@ -330,6 +348,30 @@ mod tests {
     }
 
     #[test]
+    fn mod_does_not_go_with_ctrl_or_meta() {
+        assert_eq!(
+            Hotkey::parse("mod+ctrl+k"),
+            Err(HotkeyError::ConflictingModifier("ctrl".into()))
+        );
+        assert_eq!(
+            Hotkey::parse("meta+mod+k"),
+            Err(HotkeyError::ConflictingModifier("meta".into()))
+        );
+        assert!(Hotkey::parse("ctrl+meta+k").is_ok());
+    }
+
+    #[test]
+    fn shift_needs_a_letter_a_digit_or_a_function_key() {
+        assert_eq!(
+            Hotkey::parse("shift+/"),
+            Err(HotkeyError::ShiftedSymbol("/".into()))
+        );
+        for good in ["shift+p", "shift+1", "shift+f5", "?"] {
+            assert!(Hotkey::parse(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
     fn plus_is_not_a_key() {
         assert_eq!(
             Hotkey::parse("mod++"),
@@ -355,6 +397,8 @@ mod tests {
             shift in proptest::bool::ANY,
             key in "[a-z0-9/.,;?!]",
         ) {
+            proptest::prop_assume!(!(primary && ctrl));
+            proptest::prop_assume!(!shift || key.bytes().all(|b| b.is_ascii_alphanumeric()));
             let mut parts = Vec::new();
             if shift { parts.push("shift"); }
             if alt { parts.push("alt"); }

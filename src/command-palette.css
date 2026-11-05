@@ -136,10 +136,19 @@
     cursor: pointer;
 }
 
-.autumn-command-palette-option:hover,
+/* The pointer moves the active option, so hover needs no style. The
+   outline shows the active option in forced colors too. */
 .autumn-command-palette-option[aria-selected="true"] {
     color: var(--primary);
     background: var(--primary-light);
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+.autumn-command-palette-detail {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
 }
 
 .autumn-command-palette-title {
@@ -179,6 +188,13 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
+}
+
+/* A touch screen has no keys to show. */
+@media (pointer: coarse) {
+    .autumn-command-palette-dialog .autumn-modal__footer {
+        display: none;
+    }
 }
 
 /* ── Search page (no JavaScript) ───────────────────────────────────────── */

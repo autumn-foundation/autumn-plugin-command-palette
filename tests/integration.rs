@@ -103,6 +103,25 @@ async fn visible_when_reads_the_request() {
 }
 
 #[tokio::test]
+async fn a_palette_filter_hides_every_command() {
+    let palette = palette().visible_when(|parts| parts.headers.contains_key("x-user"));
+    let client = TestApp::new().plugin(palette).build();
+    let anonymous = client.get("/_palette?q=").send().await.text();
+    assert!(!anonymous.contains(r#"href="/posts""#), "{anonymous}");
+    let signed_in = client
+        .get("/_palette?q=")
+        .header("HX-Request", "true")
+        .header("x-user", "1")
+        .send()
+        .await
+        .text();
+    assert!(
+        signed_in.contains(r#"data-command-id="posts""#),
+        "{signed_in}"
+    );
+}
+
+#[tokio::test]
 async fn actions_carry_the_csrf_token() {
     let mut config = AutumnConfig::default();
     config.security.csrf.enabled = true;
@@ -136,7 +155,7 @@ async fn the_plugin_serves_the_pack_assets() {
 }
 
 /// `Plugin::build` installs the route and the pack through the seam.
-/// `TestApp::plugin` does not carry the story gallery over, so this test
+/// `TestApp::plugin` does not copy the story gallery, so this test
 /// reads the `AppBuilder` route list. The browser conformance opens each
 /// story in the gallery.
 #[test]

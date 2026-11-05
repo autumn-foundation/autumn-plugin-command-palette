@@ -27,7 +27,7 @@ Autumn apps. It uses the widget plugin seam (ADR 0030 in autumn).
   Other requests get the full search page.
 - A link command is `<a role="option" href>`. An action command is a
   `<button role="option" formmethod="post">` with the CSRF token.
-- Recent items live in `localStorage`. The JS sends their ids. The server
+- Recent items are in `localStorage`. The JS sends their ids. The server
   shows only ids that are in the registry.
 - The hotkey is a small spec string: `mod+k`, `ctrl+shift+p`, `/`.
 - The admin feature turns each `AdminModel` into two commands: the list
@@ -45,7 +45,7 @@ Autumn apps. It uses the widget plugin seam (ADR 0030 in autumn).
 | ⌘K types `k` in a text field. | `/`-type hotkeys (no modifier) do nothing in an editable field. |
 | Keyboard user is stuck in the dialog. | Native `<dialog>`: Escape closes it. Focus goes back. A test proves it. |
 | JS off: the invoker does nothing. | The invoker is a link to the search page. JS shows a button instead. |
-| Stale `aria-activedescendant` after a swap. | JS sets the first option active after each swap. |
+| Stale `aria-activedescendant` after a swap. | The server selects the first option. The JS sets `aria-activedescendant` to it after each swap. |
 | Two commands with one id. | `CommandRegistry::add` panics at start-up, as duplicate story slugs do. |
 
 ## Six thinking hats
@@ -54,11 +54,12 @@ Autumn apps. It uses the widget plugin seam (ADR 0030 in autumn).
   `kbd_combo`, the keyboard core and `run_widget_*_conformance`.
   `Page::press` sends no modifier keys. `SystemTest` takes only `Route`s,
   so the search route is a `#[get]` route with a fixed path.
-- **Red (feelings).** Users expect ⌘K to "just work" and to look clean.
+- **Red (feelings).** Users expect ⌘K to open the palette at once. They
+  expect a clean design.
   The first result must be active, so Enter runs it at once.
-- **Black (risks).** A fixed path `/_palette` can clash with an app route.
-  One palette for each app. Synthetic key events stand in for ⌘K in tests.
-  Verus is not available in this container; CI runs the spec.
+- **Black (risks).** `/_palette` can be the same path as an app route.
+  One palette for each app. The tests send synthetic key events for ⌘K.
+  CI runs the Verus model.
 - **Yellow (benefits).** No new JS framework. No keyboard code. Same
   axe gate as core. Works with JS off.
 - **Green (ideas).** Later: fuzzy scoring, server-side recents per user,

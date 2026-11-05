@@ -4,18 +4,18 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"
-description = "A ⌘K command palette widget pack for Autumn (autumn#3416)"
+description = "A ⌘K command palette widget pack for Autumn"
 repository = "https://github.com/autumn-foundation/autumn-plugin-command-palette"
 readme = "README.md"
 keywords = ["autumn", "htmx", "command-palette", "widget", "accessibility"]
 categories = ["web-programming"]
-include = ["src/**", "README.md", "LICENSE", "CHANGELOG.md"]
+include = ["/src/**", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [dependencies]
 # `maud` and `htmx` only: a pack does not need the database stack.
 autumn-web = { version = "0.10", default-features = false, features = ["maud", "htmx"] }
 # `maud::html!` expands to absolute `::maud::…` paths, so the pack needs its
-# own `maud` at the same major as autumn-web.
+# own `maud` at the same major version as autumn-web.
 maud = "0.27"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

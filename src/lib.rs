@@ -3,8 +3,8 @@
 //! A ⌘K command palette for Autumn apps (autumn#3416). It is a widget pack
 //! (autumn ADR 0030).
 //!
-//! - ⌘K or Ctrl+K, a [`Hotkey`] that you set, or the invoker button opens
-//!   it.
+//! - ⌘K (Apple) or Ctrl+K, a [`Hotkey`] that you set, or the invoker
+//!   button can open it.
 //! - The server finds the commands. htmx sends the query and shows the
 //!   results: groups, `kbd` shortcuts and recent items.
 //! - The app fills a [`CommandRegistry`] with routes and actions. With the
@@ -35,7 +35,7 @@ mod hotkey;
 mod palette;
 mod render;
 pub mod route;
-pub mod search;
+mod search;
 
 pub use command::CommandRegistry;
 pub use command::{
@@ -44,7 +44,6 @@ pub use command::{
 };
 pub use hotkey::{Hotkey, HotkeyError};
 pub use palette::{
-    ASSETS, CommandPalette, Csrf, Labels, PACK_NAME, PALETTE_PATH, PLUGIN_NAME, PageLayout,
-    demo_palette, pack,
+    ASSETS, CommandPalette, Csrf, Labels, PACK_NAME, PALETTE_PATH, PLUGIN_NAME, PageLayout, pack,
 };
-pub use search::{Limits, ResultGroup, SearchResults};
+pub use search::{Limits, MAX_QUERY_CHARS, MAX_RECENT_IDS, ResultGroup, SearchResults};

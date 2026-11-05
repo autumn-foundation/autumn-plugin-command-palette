@@ -66,6 +66,24 @@ async fn app_page(State(state): State<AppState>) -> Markup {
     }
 }
 
+/// A page without htmx: the palette cannot load results.
+#[get("/bare")]
+async fn bare_page(State(state): State<AppState>) -> Markup {
+    let palette = state.extension::<CommandPalette>().expect("palette");
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                title { "Bare" }
+                script src="/static/js/autumn-widgets.js" defer {}
+                (pack().head())
+            }
+            body { main { h1 { "Bare" } (*palette) } }
+        }
+    }
+}
+
 #[get("/posts")]
 async fn posts_page() -> Markup {
     html! { (DOCTYPE) html lang="en" { head { title { "Posts" } } body { main { h1 { "Posts page" } } } } }
@@ -91,6 +109,7 @@ async fn start(palette: CommandPalette, csrf: bool) -> (SystemTestRunner, Page) 
             .routes(routes![
                 autumn_command_palette_plugin::route::command_palette_search,
                 app_page,
+                bare_page,
                 posts_page,
                 new_post
             ])
@@ -149,12 +168,17 @@ async fn open_app(page: &Page) {
 /// Send a key with modifiers from the focused element. `Page::press` has no
 /// modifiers.
 async fn chord(page: &Page, key: &str, ctrl: bool, meta: bool) -> bool {
+    send_key(page, key, ctrl, meta, false).await
+}
+
+/// Send one `keydown`. `true` when a handler called `preventDefault`.
+async fn send_key(page: &Page, key: &str, ctrl: bool, meta: bool, repeat: bool) -> bool {
     eval_bool(
         page,
         &format!(
             "(() => {{ const t = document.activeElement || document.body; \
              const e = new KeyboardEvent('keydown', {{ key: '{key}', ctrlKey: {ctrl}, \
-             metaKey: {meta}, bubbles: true, cancelable: true }}); \
+             metaKey: {meta}, repeat: {repeat}, bubbles: true, cancelable: true }}); \
              return !t.dispatchEvent(e); }})()"
         ),
     )
@@ -336,7 +360,7 @@ async fn typing_asks_the_server_and_enter_goes_to_the_route() {
     .await;
     must(
         &page,
-        "document.getElementById('command-palette-status').textContent.includes('1 results')",
+        "document.getElementById('command-palette-status').textContent.includes('1 result')",
         "the status tells the count",
     )
     .await;
@@ -467,4 +491,157 @@ async fn the_search_page_passes_axe() {
     must(&page, "document.readyState === 'complete'", "page loads").await;
     let violations = page.axe_violations(&axe_source()).await.expect("axe");
     assert!(violations.is_empty(), "{violations:#?}");
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn enter_right_after_typing_runs_the_new_first_option() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    assert!(chord(&page, "k", true, false).await);
+    wait_for_options(&page).await;
+    // Enter before the 150 ms delay ends: the old first option is Dashboard.
+    eval_bool(
+        &page,
+        "(() => { const i = document.getElementById('command-palette-input'); \
+         i.value = 'articles'; i.dispatchEvent(new Event('input', { bubbles: true })); \
+         return true; })()",
+    )
+    .await;
+    must(
+        &page,
+        &format!("{ACTIVE_ID} === ''"),
+        "typing clears the active option",
+    )
+    .await;
+    page.press("Enter").await.expect("enter");
+    page.expect_text("Posts page")
+        .await
+        .expect("Enter runs the first option of the new list");
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn no_match_collapses_the_list_and_says_so() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    assert!(chord(&page, "k", true, false).await);
+    wait_for_options(&page).await;
+    page.fill(INPUT, "zebra").await.expect("fill");
+    must(
+        &page,
+        "document.querySelectorAll('#command-palette-list [role=option]').length === 0",
+        "no option",
+    )
+    .await;
+    must(
+        &page,
+        "document.getElementById('command-palette-input').getAttribute('aria-expanded') === 'false'",
+        "aria-expanded is false",
+    )
+    .await;
+    must(&page, &format!("{ACTIVE_ID} === ''"), "no active option").await;
+    must(
+        &page,
+        "document.getElementById('command-palette-status').textContent.includes('No commands match.')",
+        "the status says so",
+    )
+    .await;
+    page.press("Enter").await.expect("enter");
+    must(
+        &page,
+        &format!("{DIALOG}.open"),
+        "Enter with no option does nothing",
+    )
+    .await;
+    page.press("Escape").await.expect("escape");
+    must(
+        &page,
+        &format!("!{DIALOG}.open"),
+        "Escape closes the dialog",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn the_pointer_moves_the_active_option() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    assert!(chord(&page, "k", true, false).await);
+    wait_for_options(&page).await;
+    page.hover("#command-palette-option-2")
+        .await
+        .expect("hover");
+    must(
+        &page,
+        &format!("{ACTIVE_ID} === 'command-palette-option-2'"),
+        "hover makes the option active",
+    )
+    .await;
+    must(
+        &page,
+        "document.getElementById('command-palette-option-0').getAttribute('aria-selected') === 'false'",
+        "only one option is selected",
+    )
+    .await;
+    must(
+        &page,
+        "document.activeElement.id === 'command-palette-input'",
+        "focus stays on the combobox",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn ctrl_k_closes_and_focus_goes_back() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    open_app(&page).await;
+    page.click("#note").await.expect("focus the text field");
+    assert!(
+        chord(&page, "k", true, false).await,
+        "Ctrl+K works in a text field"
+    );
+    must(&page, &format!("{DIALOG}.open"), "the dialog opens").await;
+    assert!(
+        !send_key(&page, "k", true, false, true).await,
+        "a repeated key does not toggle"
+    );
+    must(&page, &format!("{DIALOG}.open"), "the dialog stays open").await;
+    assert!(chord(&page, "k", true, false).await);
+    must(&page, &format!("!{DIALOG}.open"), "Ctrl+K closes it").await;
+    must(
+        &page,
+        "document.activeElement && document.activeElement.id === 'note'",
+        "focus goes back to the text field",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires Chromium"]
+async fn without_htmx_the_link_stays() {
+    let (_runner, page) = start(CommandPalette::new(registry()), false).await;
+    page.visit("/bare").await.expect("visit");
+    must(&page, "window.__autumnWidgets === true", "core runs").await;
+    must(
+        &page,
+        "document.querySelector('.autumn-command-palette-panel').hasAttribute('data-command-palette-ready')",
+        "pack runs",
+    )
+    .await;
+    assert!(
+        eval_bool(
+            &page,
+            "!document.querySelector('.autumn-command-palette-link').hidden && \
+             document.querySelector('[data-command-palette-open]').hidden"
+        )
+        .await,
+        "the link stays and the button stays hidden"
+    );
+    assert!(
+        !chord(&page, "k", true, false).await,
+        "the hotkey does nothing"
+    );
 }

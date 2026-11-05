@@ -1,7 +1,9 @@
 //! Find and rank the commands for a query.
 //!
-//! `take_ranked` and `parse_recent` follow the Verus model in
-//! `verification/palette.rs`.
+//! `take_ranked` and `parse_recent` have the loops of the Verus model in
+//! `verification/palette.rs`. The model proves the bounds, the order of
+//! `take_ranked` and that each item shows one time. The property tests
+//! check the same and also that no match is lost.
 
 use crate::command::{Command, CommandRegistry};
 
@@ -95,10 +97,14 @@ pub fn normalize_query(raw: &str) -> String {
 /// | 0 | the title starts with the query |
 /// | 1 | a word of the title starts with the query |
 /// | 2 | the title holds the query |
-/// | 3 | each query word is in the title, the keywords, the group or the hint |
+/// | 3 | each query word starts a word of the title, the keywords, the group or the hint |
+///
+/// The text is lowercase, without combining marks (see [`fold`]).
 #[must_use]
 pub fn score(command: &Command, query: &str) -> u8 {
-    let title = command.title().to_lowercase();
+    let query = fold(query);
+    let query = query.as_str();
+    let title = fold(command.title());
     if title.starts_with(query) {
         return 0;
     }
@@ -120,13 +126,27 @@ pub fn score(command: &Command, query: &str) -> u8 {
         .chain(command.hint_text())
     {
         text.push(' ');
-        text.push_str(&extra.to_lowercase());
+        text.push_str(&fold(extra));
     }
-    if query.split_whitespace().all(|word| text.contains(word)) {
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+    if query
+        .split_whitespace()
+        .all(|q| words.iter().any(|word| word.starts_with(q)))
+    {
         WORST
     } else {
         NO_MATCH
     }
+}
+
+/// Lowercase `text` and remove the combining marks U+0300…U+036F. Thus
+/// `İst` and `ist` match `İstanbul`.
+#[must_use]
+pub fn fold(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+        .collect()
 }
 
 /// The indices of the matched scores: best rank first, registry order in
@@ -162,7 +182,7 @@ pub fn parse_recent(raw: &str) -> Vec<&str> {
 /// Find the commands for `query`.
 ///
 /// An empty query gives the recent items first (in `recent` order), then
-/// the other commands in registry order. A query gives the matched
+/// the other commands in registry order, collected by group. A query gives the matched
 /// commands. A group shows at the place of its best command.
 /// `visible` removes a command; it removes a recent item too.
 #[must_use]
@@ -178,13 +198,20 @@ pub fn search<'a>(
     let commands = registry.commands();
     let mut groups: Vec<ResultGroup<'a>> = Vec::new();
     if query.is_empty() {
-        let recent: Vec<&'a Command> = recent
+        let mut shown: Vec<&'a Command> = Vec::new();
+        for command in recent
             .iter()
             .take(MAX_RECENT_IDS)
             .filter_map(|id| registry.get(id))
-            .filter(|command| visible(command))
-            .take(limits.recent)
-            .collect();
+        {
+            if shown.len() < limits.recent
+                && visible(command)
+                && !shown.iter().any(|c| c.id() == command.id())
+            {
+                shown.push(command);
+            }
+        }
+        let recent = shown;
         let rest: Vec<&'a Command> = commands
             .iter()
             .filter(|command| visible(command) && !recent.iter().any(|r| r.id() == command.id()))
@@ -199,7 +226,7 @@ pub fn search<'a>(
         }
         push_grouped(&mut groups, rest.into_iter());
     } else {
-        let lower = query.to_lowercase();
+        let lower = fold(&query);
         let scores: Vec<u8> = commands
             .iter()
             .map(|command| {
@@ -289,6 +316,43 @@ mod tests {
         assert_eq!(score(&posts, "go to"), 3, "the group matches");
         assert_eq!(score(&posts, "zebra"), NO_MATCH);
         assert_eq!(score(&settings, "profile zebra"), NO_MATCH);
+    }
+
+    #[test]
+    fn rank_3_needs_a_word_start() {
+        let posts = Command::route("p", "Posts", "/p").keywords(["articles"]);
+        assert_eq!(score(&posts, "rticles"), NO_MATCH);
+        assert_eq!(score(&posts, "o"), 2, "the title holds `o`");
+        let dash = Command::route("d", "Dashboard", "/d");
+        assert_eq!(score(&dash, "t"), 3, "`to` in `Go to` starts with `t`");
+        assert_eq!(
+            score(&dash, "e"),
+            NO_MATCH,
+            "no `e` and no word starts with `e`"
+        );
+    }
+
+    #[test]
+    fn combining_marks_do_not_block_a_match() {
+        let city = Command::route("c", "İstanbul", "/c");
+        for query in ["ist", "İst", "istanbul"] {
+            assert_eq!(score(&city, query), 0, "{query}");
+        }
+        assert_eq!(fold("İ"), "i");
+    }
+
+    #[test]
+    fn a_repeated_recent_id_shows_one_time() {
+        let registry = registry();
+        let results = search(
+            &registry,
+            "",
+            &["out", "out", "home"],
+            &all,
+            Limits::default(),
+            "Recent",
+        );
+        assert_eq!(&ids(&results)[..2], ["out", "home"]);
     }
 
     #[test]

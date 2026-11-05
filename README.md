@@ -4,8 +4,8 @@ A ⌘K command palette for [Autumn](https://github.com/autumn-foundation/autumn)
 apps (autumn#3416). It is a widget pack. It uses the widget plugin seam
 (autumn ADR 0030).
 
-- ⌘K or Ctrl+K opens it. You can set a different hotkey. An invoker button
-  also opens it.
+- ⌘K (Apple) or Ctrl+K opens it. You can set a different hotkey. An
+  invoker button also opens it.
 - The server finds the commands. htmx sends the query and shows the
   results: groups, `kbd` shortcuts and recent items.
 - The app fills a command registry: routes, actions and (with the `admin`
@@ -60,16 +60,20 @@ each app.
 | Constructor | Result |
 |---|---|
 | `Command::route(id, title, href)` | `<a role="option" href>`. Group: `Go to`. |
-| `Command::action(id, title, path)` | A `POST` to `path` with the CSRF token. Group: `Actions`. |
+| `Command::action(id, title, path)` | A `POST` to `path`. Group: `Actions`. The CSRF token goes only to a path on this origin (`/…`, not `//…`). |
 
 Builder methods: `group`, `keywords`, `shortcut`, `hint`, `visible_when`.
 
 An id has 1 to 100 ASCII letters, digits and `- _ . : /`.
-`CommandRegistry::add` panics on a bad or duplicate id. `try_add` returns
-the error.
+`CommandRegistry::add` panics on a bad or duplicate id, or an empty title.
+`try_add` returns the error.
 
-`visible_when(|parts| ...)` runs for each request. Use it to hide a command
-from a user. The filter also removes the command from the recent items.
+`GET /_palette` needs no login. Thus a command without a filter is public.
+
+- `Command::visible_when(|parts| ...)` filters one command for each request.
+- `CommandPalette::visible_when(|parts| ...)` filters all commands.
+
+A filter also removes the command from the recent items.
 
 ### Admin resources
 
@@ -95,11 +99,18 @@ the admin role. To show the commands to all users, give `|_| true`.
 | `labels(labels)` | English texts. Change the fields of `Labels::default()`. |
 | `limits(Limits { results, recent })` | 20 results, 5 recent items |
 | `page_layout(\|title, body\| ...)` | A plain page |
+| `visible_when(\|parts\| ...)` | No filter: all commands are public |
 
 A hotkey spec has modifiers and one key, joined by `+`. The modifiers are
-`mod` (Ctrl or ⌘), `ctrl`, `meta`, `alt` and `shift`. The key is one visible
-ASCII character or `F1` to `F12`. A key with no modifier (for example `/`)
-does nothing while focus is in a text field.
+`mod`, `ctrl`, `meta`, `alt` and `shift`. The key is one visible ASCII
+character or `F1` to `F12`.
+
+- `mod` is ⌘ on Apple platforms. On other platforms it is Ctrl or ⌘.
+- `mod` cannot go with `ctrl` or `meta`.
+- `shift` needs a letter, a digit or `F1` to `F12`. For a symbol, use the
+  shifted symbol: `?`, not `shift+/`.
+- A hotkey without `mod`, `ctrl`, `meta` or `alt` (for example `/` or
+  `shift+k`) does nothing while focus is in a text field.
 
 ## How it works
 
@@ -121,14 +132,19 @@ sequenceDiagram
   J->>J: store the id as recent
 ```
 
-- The dialog is the core `modal()`. Escape and a backdrop click close it.
-  Focus goes back to the element that had it.
+- The dialog is the core `modal()`. Escape, the close button and a backdrop
+  click close it. Focus goes back to the element that had it.
 - The input is an APG combobox. Focus stays on it. The listbox uses
   `data-autumn-activedescendant`. The pack JS has no arrow-key code.
 - `GET /_palette` sends the listbox content to an htmx request. It sends
-  the search page to other requests. The answer is `private, no-store`.
-- Recent ids are in `localStorage`. The server shows only ids that are in
-  the registry and pass `visible_when`.
+  the search page to other requests. The response is `private, no-store`.
+- Enter before the new results come runs the first option of the new list.
+  The pointer moves the active option.
+- Recent ids are in `localStorage`, one list for each browser. The server
+  shows only ids that are in the registry and pass the filters. On a
+  shared computer, clear the key `autumn-command-palette:recent:<id>` at
+  sign-out.
+- Without htmx, the invoker stays a link to the search page.
 
 ## Accessibility and CSP
 

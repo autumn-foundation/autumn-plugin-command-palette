@@ -71,7 +71,8 @@ pub enum RegistryError {
 pub enum CommandTarget {
     /// Go to this URL with `GET`.
     Route(String),
-    /// Send a `POST` to this path, with the CSRF token.
+    /// Send a `POST` to this path. The CSRF token goes with it when the path
+    /// is on this origin (`/…`, not `//…`).
     Action(String),
 }
 

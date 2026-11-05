@@ -13,7 +13,7 @@ use autumn_web::stories::Story;
 use autumn_web::widget_pack::WidgetPack;
 use maud::{Markup, Render};
 
-use crate::command::{Command, CommandRegistry};
+use crate::command::{Command, CommandRegistry, Visibility};
 use crate::hotkey::Hotkey;
 use crate::search::{self, Limits, SearchResults};
 
@@ -39,6 +39,7 @@ pub static ASSETS: PluginAssets = PluginAssets::from_files(
 /// The texts of the palette. Change a field to translate it.
 ///
 /// `count` holds `{count}`. The palette puts the number of results there.
+/// `count_one` is the text for one result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Labels {
@@ -56,8 +57,14 @@ pub struct Labels {
     pub recent: String,
     /// The text when no command matches.
     pub empty: String,
-    /// The status text for one or more results.
+    /// The status text for two or more results.
     pub count: String,
+    /// The status text for one result.
+    pub count_one: String,
+    /// The status text when the search request fails.
+    pub error: String,
+    /// The label of the close button.
+    pub close: String,
     /// The title of the search page.
     pub page_title: String,
     /// The submit button of the search page.
@@ -81,6 +88,9 @@ impl Default for Labels {
             recent: "Recent".to_owned(),
             empty: "No commands match.".to_owned(),
             count: "{count} results".to_owned(),
+            count_one: "1 result".to_owned(),
+            error: "The search failed. Try again.".to_owned(),
+            close: "Close".to_owned(),
             page_title: "Search commands".to_owned(),
             submit: "Search".to_owned(),
             hint_move: "to move".to_owned(),
@@ -110,6 +120,7 @@ pub struct Inner {
     pub(crate) labels: Labels,
     pub(crate) limits: Limits,
     pub(crate) layout: Option<PageLayout>,
+    pub(crate) gate: Option<Visibility>,
 }
 
 /// A command palette. It is the plugin and the markup.
@@ -135,6 +146,7 @@ impl CommandPalette {
                 labels: Labels::default(),
                 limits: Limits::default(),
                 layout: None,
+                gate: None,
             }),
         }
     }
@@ -179,6 +191,18 @@ impl CommandPalette {
         self.with(|inner| inner.limits = limits)
     }
 
+    /// Show the commands only when `visible` returns `true` for the
+    /// request. This filter is for all commands, before each
+    /// [`Command::visible_when`]. `GET /_palette` needs no login, so
+    /// without a filter each command is public.
+    #[must_use]
+    pub fn visible_when<F>(self, visible: F) -> Self
+    where
+        F: Fn(&Parts) -> bool + Send + Sync + 'static,
+    {
+        self.with(|inner| inner.gate = Some(Arc::new(visible)))
+    }
+
     /// Put the search page in the app layout.
     #[must_use]
     pub fn page_layout<F>(self, layout: F) -> Self
@@ -213,12 +237,17 @@ impl CommandPalette {
     }
 
     /// Find the commands for `query`. `recent` holds the recent ids, newest
-    /// first. With `parts`, each [`Command::visible_when`] filter runs.
-    /// Without `parts`, a command with a filter does not show.
+    /// first. With `parts`, the palette filter and each
+    /// [`Command::visible_when`] filter run. Without `parts`, a command with
+    /// a filter does not show, and with a palette filter no command shows.
     #[must_use]
     pub fn search(&self, query: &str, recent: &[&str], parts: Option<&Parts>) -> SearchResults<'_> {
+        let gate = self.inner.gate.as_ref();
         let visible = |command: &Command| {
-            parts.map_or_else(|| !command.has_filter(), |parts| command.is_visible(parts))
+            parts.map_or_else(
+                || gate.is_none() && !command.has_filter(),
+                |parts| gate.is_none_or(|gate| gate(parts)) && command.is_visible(parts),
+            )
         };
         search::search(
             &self.inner.registry,
@@ -280,6 +309,7 @@ impl fmt::Debug for CommandPalette {
             .field("labels", &self.inner.labels)
             .field("limits", &self.inner.limits)
             .field("page_layout", &self.inner.layout.is_some())
+            .field("visible_when", &self.inner.gate.is_some())
             .finish()
     }
 }
@@ -505,7 +535,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<kbd class="autumn-kbd-combo"><kbd class="autumn-kbd">G</kbd>+<kbd class="autumn-kbd">D</kbd></kbd>"#), "{html}");
-        assert!(html.contains(r#"<button id="command-palette-option-2" class="autumn-command-palette-option" role="option" tabindex="-1" aria-selected="false" data-command-id="posts.new" type="submit" form="command-palette-action" formaction="/posts/new" formmethod="post">"#), "{html}");
+        assert!(html.contains(r#"<button id="command-palette-option-2" class="autumn-command-palette-option" role="option" tabindex="-1" aria-selected="false" data-command-id="posts.new" type="submit" form="command-palette-action" formaction="/posts/new" formmethod="post" aria-describedby="command-palette-option-2-desc">"#), "{html}");
         assert!(html.contains(r#"<form id="command-palette-action" method="post" hidden><input type="hidden" name="_csrf" value="tok123"></form>"#), "{html}");
         assert!(
             html.contains(r#"<span class="autumn-command-palette-hint">Write a draft</span>"#),
@@ -516,6 +546,63 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("3 results"), "{html}");
+    }
+
+    #[test]
+    fn the_token_goes_only_to_this_origin() {
+        let palette = CommandPalette::new(
+            CommandRegistry::new()
+                .add(Command::action("local", "Local", "/x"))
+                .add(Command::action("far", "Far", "https://other.example/x"))
+                .add(Command::action("sneaky", "Sneaky", "//other.example/x"))
+                .add(Command::action("slash", "Slash", "/\\other.example/x")),
+        );
+        let results = palette.search("", &[], None);
+        let html = palette.fragment(&results, Some(&csrf())).into_string();
+        assert_eq!(html.matches("tok123").count(), 1, "{html}");
+        assert!(
+            html.contains(r#"data-command-id="local" type="submit" form="command-palette-action""#),
+            "{html}"
+        );
+        for id in ["far", "sneaky", "slash"] {
+            assert!(
+                html.contains(&format!(
+                    r#"data-command-id="{id}" type="submit" form="command-palette-action-external""#
+                )),
+                "{id}: {html}"
+            );
+        }
+        assert!(
+            html.contains(
+                r#"<form id="command-palette-action-external" method="post" hidden></form>"#
+            ),
+            "{html}"
+        );
+        let page = palette.page_body(&results, Some(&csrf())).into_string();
+        assert_eq!(page.matches("tok123").count(), 1, "{page}");
+    }
+
+    #[test]
+    fn one_result_uses_the_singular_text() {
+        let palette = palette();
+        let html = palette
+            .fragment(&palette.search("new", &[], None), None)
+            .into_string();
+        assert!(html.contains(">1 result<"), "{html}");
+    }
+
+    #[test]
+    fn the_dialog_has_a_close_button_and_an_error_text() {
+        let html = palette().dialog().into_string();
+        assert!(html.contains(r#"aria-label="Close""#), "{html}");
+        assert!(
+            html.contains(r#"data-command-palette-error="The search failed. Try again.""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"hx-trigger="input delay:150ms, command-palette-open""#),
+            "{html}"
+        );
     }
 
     #[test]

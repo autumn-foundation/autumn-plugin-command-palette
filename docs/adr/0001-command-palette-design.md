@@ -12,8 +12,9 @@ as core widgets.
 
 ## Decision
 
-- The dialog is the core `modal()` with `light_dismiss`. The browser gives
-  the focus trap, Escape and focus return.
+- The dialog is the core `modal()`. The native modal `<dialog>` makes the
+  page inert, closes on Escape and returns focus. `light_dismiss` adds the
+  backdrop click.
 - The input is an APG combobox. The listbox uses the keyboard core
   (`data-autumn-activedescendant`). The pack JS has no arrow-key code.
 - One route, `GET /_palette`, has a fixed path. An htmx request gets the
@@ -22,6 +23,8 @@ as core widgets.
 - A route command is `<a role="option" href>`. An action command is a
   `<button role="option" type="submit">` for a hidden `POST` form with the
   CSRF token. Enter clicks it, so the browser does the navigation.
+- Only a path on this origin (`/…`, not `//…` or `/\…`) gets the CSRF
+  token. An action to another origin uses a second form with no token.
 - Recent ids are in `localStorage`. The server resolves them against the
   registry and `visible_when`.
 - The ranking uses one pass for each rank. This is simple to prove: the
@@ -32,5 +35,9 @@ as core widgets.
 - One palette for each app. The path `/_palette` is reserved.
 - An admin command needs an explicit filter. This prevents a leak of admin
   links.
+- `GET /_palette` needs no login. `CommandPalette::visible_when` filters
+  all commands for a request.
+- The palette takes no `FieldOptions`. Its root is the core `modal()`. The
+  app changes it through `id`, `Labels` and `page_layout`.
 - `Page::press` sends no modifier keys. The browser tests send ⌘K and
   Ctrl+K as a page `KeyboardEvent`.

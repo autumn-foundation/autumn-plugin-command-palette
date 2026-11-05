@@ -24,7 +24,7 @@ pub struct SearchParams {
 }
 
 /// `GET /_palette`. An htmx request gets the listbox content. Other
-/// requests get the search page. The answer is `private, no-store` and
+/// requests get the search page. The response is `private, no-store` and
 /// varies on `HX-Request`.
 #[get("/_palette")]
 pub async fn command_palette_search(
