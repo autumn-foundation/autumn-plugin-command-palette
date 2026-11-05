@@ -1,0 +1,48 @@
+[package]
+name = "autumn-command-palette-plugin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+license = "Apache-2.0"
+description = "A ⌘K command palette widget pack for Autumn"
+repository = "https://github.com/autumn-foundation/autumn-plugin-command-palette"
+readme = "README.md"
+keywords = ["autumn", "htmx", "command-palette", "widget", "accessibility"]
+categories = ["web-programming"]
+include = ["/src/**", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+
+[dependencies]
+# `maud` and `htmx` only: a pack does not need the database stack.
+autumn-web = { version = "0.10", default-features = false, features = ["maud", "htmx"] }
+# `maud::html!` expands to absolute `::maud::…` paths, so the pack needs its
+# own `maud` at the same major version as autumn-web.
+maud = "0.27"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+autumn-admin-plugin = { version = "0.10", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+# Commands for the resources of `autumn-admin-plugin`.
+admin = ["dep:autumn-admin-plugin"]
+# The Chromium tests (`tests/browser.rs`).
+system-tests = ["autumn-web/system-tests"]
+
+[[test]]
+name = "browser"
+path = "tests/browser.rs"
+required-features = ["system-tests"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"

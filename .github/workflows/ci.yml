@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --locked
+      - name: Package
+        run: cargo package --locked --allow-dirty
+
+  msrv:
+    name: MSRV (1.97.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - name: Check
+        run: cargo check --all-features --locked
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - name: Test
+        run: cargo test --all-features --locked
+
+  browser:
+    name: Browser (Chromium)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+      - name: Browser tests
+        env:
+          AUTUMN_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
+        run: cargo test --features system-tests --test browser --locked -- --include-ignored --test-threads=1
+
+  coverage:
+    name: Coverage
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage (85% of lines or more)
+        run: cargo llvm-cov --all-features --locked --fail-under-lines 85 --summary-only
+
+  verus:
+    name: Verus proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Verus
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # A pinned release: a new Verus release cannot turn a PR red.
+          VERUS_TAG: release/rolling/0.2026.11.05.1c5a277
+        run: |
+          dir="$RUNNER_TEMP/verus"
+          mkdir -p "$dir"
+          gh release download "$VERUS_TAG" --repo verus-lang/verus --pattern '*x86-linux.zip' --dir "$dir"
+          unzip -q "$dir"/*.zip -d "$dir"
+          verus_bin="$(find "$dir" -type f -name verus -perm -u+x | head -n 1)"
+          if [ -z "$verus_bin" ]; then
+            echo "::error::the Verus release asset has no verus binary"
+            exit 1
+          fi
+          # Verus needs one exact toolchain. Its error names it.
+          out="$("$verus_bin" --version 2>&1)" || true
+          version="$(printf '%s\n' "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-x86_64-unknown-linux-gnu' | head -n 1 | cut -d- -f1)" || true
+          if [ -n "$version" ]; then
+            rustup toolchain install "$version" --profile minimal
+          fi
+          "$verus_bin" --version
+          echo "VERUS_BIN=$verus_bin" >> "$GITHUB_ENV"
+      - name: Verify
+        run: '"$VERUS_BIN" verification/palette.rs'
